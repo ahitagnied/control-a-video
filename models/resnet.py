@@ -101,6 +101,12 @@ class UpDownBlock(nn.Module):
 
 @dataclass
 class ResnetBlock3D(nn.Module):
+    """
+    applies a 3d resnet block to a video tensor. this block uses group normalization, inflated 3d 
+    convolutions, and an optional time embedding. the block performs normalization, activation, convolution, 
+    dropout, and a shortcut connection. it supports both default and scale_shift modes for time embedding 
+    normalization.
+    """
     in_channels: int
     out_channels: int = None
     conv_shortcut: bool = False
@@ -179,7 +185,53 @@ class ResnetBlock3D(nn.Module):
         self.conv_shortcut = None
         if self.use_in_shortcut:
             self.conv_shortcut = InflatedConv3d(self.in_channels, self.out_channels, kernel_size=1, stride=1, padding=0)
+        
+    def forward(self, input_tensor, temb):
+        hidden_states = input_tensor
+
+        # apply first norm and non-linearity
+        hidden_states = self.norm1(hidden_states)
+        hidden_states = self.nonlinearity_fn(hidden_states)
+
+        # apply first convolution
+        hidden_states = self.conv1(hidden_states)
+
+        # process time embedding if provided
+        if temb is not None:
+            temb = self.nonlinearity_fn(temb)
+            if self.time_emb_proj is not None:
+                temb = self.time_emb_proj(temb)
+            temb = temb[:, :, None, None, None]
+        
+        # if using default time embedding normalization, add the embedding directly
+        if temb is not None and self.time_embedding_norm == "default":
+            hidden_states = hidden_states + temb
+        
+        # apply second norm
+        hidden_states = self.norm2(hidden_states)
+
+        # if using scale_shift time embedding normalization, split embedding into scale and shift and apply them
+        if temb is not None and self.time_embedding_norm == "scale_shift":
+            scale, shift = torch.chunk(temb, 2, dim=1)
+            hidden_states = hidden_states * (1 + scale) + shift
+        
+        # apply non-linearity, dropout, and second convolution
+        hidden_states = self.nonlinearity_fn(hidden_states)
+        hidden_states = self.dropout_layer(hidden_states)
+        hidden_states = self.conv2(hidden_states)
+
+        # apply shortcut connection if defined
+        if self.conv_shortcut_layer is not None:
+            input_tensor = self.conv_shortcut_layer(input_tensor)
+
+        output_tensor = (input_tensor + hidden_states) / self.output_scale_factor
+
+        return output_tensor
+
 
 class Mish(nn.Module):
+    """
+    applies the mish activation function.
+    """
     def forward(self, hidden_states):
         return hidden_states * torch.tanh(nn.functional.softplus(hidden_states))
