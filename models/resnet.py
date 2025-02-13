@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-class InflatedConv2d(nn.Conv2d):
+class InflatedConv3d(nn.Conv2d):
     """
     applies a 2d convolution layer across the frames of a video. each frame is convolved 
     independently
@@ -58,12 +58,12 @@ class UpDownBlock(nn.Module):
         if self.scale_factor < 1: # downsample: use a conv with stride to reduce spatial dimensions.
             stride = int(round(1/self.scale_factor)) # note: for a scale factor of 0.5, stride is 2
             if self.use_conv:
-                self.conv = InflatedConv2d(self.channels, self.out_channels, 3, stride=stride, padding=self.padding)
+                self.conv = InflatedConv3d(self.channels, self.out_channels, 3, stride=stride, padding=self.padding)
             else:
                 raise NotImplementedError
         else: # upsample: use interpolation, then optionally a conv.
             if self.use_conv:
-                self.conv = InflatedConv2d(self.channels, self.out_channels, 3, padding=1)
+                self.conv = InflatedConv3d(self.channels, self.out_channels, 3, padding=1)
             else: 
                 self.conv = None
     
@@ -85,7 +85,7 @@ class UpDownBlock(nn.Module):
                     scale_factor=[1, self.scale_factor, self.scale_factor],
                     mode="nearest"
                 )
-            else: 
+            else:
                 hidden_states = F.interpolate(
                     hidden_states, 
                     size=output_size,
@@ -99,12 +99,87 @@ class UpDownBlock(nn.Module):
             
             return hidden_states
 
+@dataclass
+class ResnetBlock3D(nn.Module):
+    in_channels: int
+    out_channels: int = None
+    conv_shortcut: bool = False
+    dropout: float = 0.0
+    temb_channels: int = 512
+    groups: int= 32
+    groups_out: int = None
+    pre_norm: bool= True
+    eps: float = 1e-6
+    non_linearity: str = "swish"
+    time_embedding_norm: str = "default"
+    output_scale_factor: float = 1.0
+    use_in_shortcut: bool = None
 
+    # the following is initialised by __post_init__
+    norm1: nn.Module = field(init=False)
+    conv1: nn.Module = field(init=False)
+    time_emb_proj: nn.Module = field(init=False)
+    norm2: nn.Module = field(init=False)
+    dropout_layer: nn.Module = field(init=False)
+    conv2: nn.Module = field(init=False)
+    nonlinearity_fn: callable = field(init=False)
+    conv_shortcut_layer: nn.Module = field(init=False, default=None)
+
+    def __post_init__(self):
+        nn.Module.__init__(self)
+
+        # if out_channels is not provided, use in_channels
+        if self.out_channels == None:
+            self.out_channels = self.in_channels
+
+        # if groups_out is not provided, use groups
+        if self.groups_out == None: 
+            self.groups_out = self.groups
         
+        # as in the original code, force prenorm to be true
+        self.pre_norm = True
 
+        # first normalisation
+        self.norm1 = nn.GroupNorm(num_groups=self.groups, num_channels=self.in_channels, eps=self.eps, affine=True)
+        # first convolution layer: kernel_size=3, stride=1, padding=1
+        self.conv1 = InflatedConv3d(in_channels=self.in_channels, out_channels=self.out_channels, kernel_size=3, stride=1, padding=1)
 
+        # time embedding projection layer (if temb_channels is provided)
+        if self.temb_channels is not None:
+            if self.time_embedding_norm == "default":
+                time_emb_proj_out_channels = self.out_channels
+            elif self.time_embedding_norm == "scale_shift":
+                time_emb_proj_out_channels = self.out_channels * 2
+            else: 
+                raise ValueError(f"unknown time_embedding_norm: {self.time_embedding_norm}")
+            self.time_emb_proj = nn.Linear(self.temb_channels, time_emb_proj_out_channels)
+        else: 
+            self.time_emb_proj = None
 
-    
+        # second normalisation layer
+        self.norm2 = nn.GroupNorm(num_groups=self.groups_out, num_channels=self.out_channels, eps=self.eps, affine=True)
+        # dropout layer
+        self.dropout_layer = nn.Dropout(self.dropout)
+        # second convolution layer: kernel_size=3, stride=1, padding=1
+        self.conv2 = InflatedConv3d(self.out_channels, self.out_channels, kernel_size=3, stride=1, padding=1)
 
+        # define the non-linearity
+        if self.non_linearity == "swish":
+            self.nonlinearity_fn = lambda x: F.silu(x)
+        elif self.non_linearity == "mish":
+            self.nonlinearity_fn = Mish()
+        elif self.non_linearity == "silu":
+            self.nonlinearity = nn.SiLU()
+        else:
+            raise ValueError(f"unknown non_linearity: {self.non_linearity}")
+        
+        ## CODE CORRECTION: CHECK!!
+        if self.use_in_shortcut is None:
+            self.use_in_shortcut = (self.in_channels != self.out_channels)
+        self.conv_shortcut = None
+        if self.use_in_shortcut:
+            self.conv_shortcut = InflatedConv3d(self.in_channels, self.out_channels, kernel_size=1, stride=1, padding=0)
 
-
+class Mish(nn.Module):
+    def forward(self, hidden_states):
+        return hidden_states * torch.tanh(nn.functional.softplus(hidden_states))
