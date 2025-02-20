@@ -56,6 +56,7 @@ class PseudoConv3D(nn.Conv2d):
 
 class upsamplePseudo3D(nn.Conv2d):
     """
+    spatial upsampling layer with optional convolution
     """
     def __init__(self, channels, use_conv=False, use_conv_transpose=False, out_channels=None, name="conv"):
         super().__init__()
