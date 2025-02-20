@@ -58,27 +58,26 @@ class UpsamplePseudo3D(nn.Module):
     """
     spatial upsampling layer with optional convolution
     """
-    def __init__(self, channels, use_conv=False, use_conv_transpose=False, out_channels=None, name="conv"):
+    def __init__(self, channels, use_conv=False, out_channels=None, name="conv"):
         super().__init__()
-        self.channels=channels 
-        self.use_conv=use_conv
-        self.use_conv_transpose=use_conv_transpose
-        self.out_channels=out_channels or channels
-        self.name=name
+        self.channels=channels # number of input channels 
+        self.use_conv=use_conv # whether to use convolution or not
+        self.out_channels=out_channels or channels # number of output channels, default to input channels 
+        self.name=name # name used to store convolution data
 
+        # initialise convolution layer based on settings
         conv = None
-        if use_conv_transpose: 
-            raise NotImplementedError 
-            conv = nn.ConvTranspose2d(channels, self.out_channels, 4, 2, 1)
-        elif use_conv:
+        if use_conv: # use PseudoConv3d for spatial+temporal convolution
             conv = PseudoConv3d(self.channels, self.out_channels, 3, padding=1)
         
+        # store convolution layer
         if name == "conv":
             self.conv = conv
         else: 
             self.Conv2d0 = conv
     
     def forward(self, hidden_states, output_size=None):
+        # verify that input has correct number of channels 
         assert hidden_states.shape[1] == self.channels
 
         # change dtype for compatibility issues
@@ -140,3 +139,6 @@ class DownsamplePseudo3D(nn.Module):
         if name == "conv":
             self.conv2d0 = conv
         self.conv = conv
+    
+    def forward(self, hidden_states):
+        assert hidden_states.shape[1] == self.channels
