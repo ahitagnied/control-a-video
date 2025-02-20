@@ -1,2 +1,2 @@
 # control-a-video
-Implementation of Control-Video by Zhang et al. | ControlVideo: Training-free Controllable Text-to-Video Generation
+Implementation of Control-a-Video by Chen et al. | Control-A-Video: Controllable Text-to-Video Diffusion Models with Motion Prior and Reward Feedback Learning
