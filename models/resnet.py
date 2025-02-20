@@ -35,7 +35,7 @@ class PseudoConv3d(nn.Conv2d):
         
     def forward(self, x):
         b = x.shape[0] # num of batches
-        is_video = x.ndim == True
+        is_video = x.ndim == 5
         if is_video:
             x = rearrange(x, "b c f h w -> (b f) c h w")
         x = super().forward(x) # pass through a convoution layer of the parent class
@@ -44,7 +44,7 @@ class PseudoConv3d(nn.Conv2d):
 
         *_, h, w = x.shape # retain values of h and w for rearranging
         
-        if self.conv_temporal is None or is_video:
+        if self.conv_temporal is None or not is_video:
             return x
         
         # now do a temporal convolution 
@@ -90,9 +90,10 @@ class UpsamplePseudo3D(nn.Module):
         if hidden_states.shape[0] >= 64:
             hidden_states = hidden_states.contiguous()
 
+        # check if this is a video
         is_video = hidden_states.ndim == 5
-        b = hidden_states.shape[0] 
-        if is_video:
+        b = hidden_states.shape[0] # find the number of batches
+        if is_video: # video shape -> image shape 
             hidden_states = rearrange(hidden_states, "b c f h w -> (b f) c h w")
         if output_size is None: 
             # repeats every weight twice in height and width directions, doubling the size
@@ -103,7 +104,7 @@ class UpsamplePseudo3D(nn.Module):
         # if the input is dfloat16, switch back to dfloat16
         if dtype == torch.bfloat16:
             hidden_states = hidden_states.to(dtype)
-        
+        # image shape -> video shape
         if is_video:
             hidden_states = rearrange(hidden_states, "(b f) c h w -> b c f h w", b=b)
 
@@ -115,3 +116,27 @@ class UpsamplePseudo3D(nn.Module):
                 hidden_states = self.Conv2d0(hidden_states)
         
         return hidden_states
+    
+
+class DownsamplePseudo3D(nn.Module):
+    """
+    spatial downsampling layer with optional convolution
+    """
+    def __init__(self, channels, use_conv=False, out_channels=None, padding=1, name="conv"):
+        super().__init__()
+        self.channels=channels 
+        self.use_conv=use_conv
+        self.out_channels=out_channels or channels
+        self.padding=padding
+        stride=2
+        self.name=name
+
+        if use_conv:
+            conv = PseudoConv3d(self.channels, self.out_channels, kernel_size=3,stride=stride, padding=padding)
+        else: 
+            assert self.channels == self.out_channels
+            conv = nn.AvgPool2d(kernel_size=stride, stride=stride)
+
+        if name == "conv":
+            self.conv2d0 = conv
+        self.conv = conv
