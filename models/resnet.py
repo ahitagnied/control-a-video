@@ -8,7 +8,7 @@ class PseudoConv3D(nn.Conv2d):
     """
     applies a spatial 2d convolutional + 1d temporal convolution for video data processing 
     """
-    def __init__(self, in_channels, out_channels, kernel_size, temporal_kernel_size, **kwargs):
+    def __init__(self, in_channels, out_channels, kernel_size, temporal_kernel_size=None, **kwargs):
         # pass arguments onto the parent class to do all the usual setup for a conv layer
         super().__init__(
             in_channels=in_channels,
@@ -35,11 +35,17 @@ class PseudoConv3D(nn.Conv2d):
         
     def forward(self, x):
         b = x.shape[0] # num of batches
-        x = rearrange(x, "b c f h w -> (b f) c h w")
+        is_video = x.ndim == True
+        if is_video:
+            x = rearrange(x, "b c f h w -> (b f) c h w")
         x = super().forward(x) # pass through a convoution layer of the parent class
-        x = rearrange(x, "(b f) c h w -> b f c h w") # rearrange to video shape 
+        if is_video:
+            x = rearrange(x, "(b f) c h w -> b f c h w") # rearrange to video shape 
 
         *_, h, w = x.shape # retain values of h and w for rearranging
+        
+        if self.conv_temporal is None or is_video:
+            return x
         
         # now do a temporal convolution 
         x = rearrange(x, "b f c h w -> (b h w) f c")
@@ -47,3 +53,64 @@ class PseudoConv3D(nn.Conv2d):
         x = rearrange(x, "(b h w) f c -> b g c h w", h = h, w = w)
 
         return x
+
+class upsamplePseudo3D(nn.Conv2d):
+    """
+    """
+    def __init__(self, channels, use_conv=False, use_conv_transpose=False, out_channels=None, name="conv"):
+        super().__init__()
+        self.channels=channels 
+        self.use_conv=use_conv
+        self.use_conv_transpose=use_conv_transpose
+        self.out_channels=out_channels
+        self.name=name
+
+        conv = None
+        if use_conv_transpose: 
+            raise NotImplementedError 
+            conv = nn.ConvTranspose2d(channels, self.out_channels, 4, 2, 1)
+        elif use_conv:
+            conv = PseudoConv3D(self.channels, self.out_channels, 3, padding=1)
+        
+        if name == "conv":
+            self.conv = conv
+        else: 
+            self.Conv2d0 = conv
+    
+    def forward(self, hidden_states, output_size=None):
+        assert hidden_states.shape[1] == self.channels
+
+        # change dtype for compatibility issues
+        dtype = hidden_states.dtype
+        if dtype == torch.bfloat16: 
+            hidden_states.to(torch.float32)
+        
+        # if the batch size is large, then make sure hidden_states is in a contiguous block of memory
+        if hidden_states.shape[0] >= 64:
+            hidden_states = hidden_states.contiguous()
+
+        is_video = hidden_states.ndim == 5
+        b = hidden_states.shape[0] 
+        if is_video:
+            hidden_states = rearrange(hidden_states, "b f c h w -> (b f) c h w")
+        if output_size is None: 
+            # repeats every weight twice in height and width directions, doubling the size
+            hidden_states = F.interpolate(hidden_states, scale_factor=2.0, mode="nearest")
+        else: 
+            hidden_states = F.interpolate(hidden_states, size=output_size, mode="nearest")
+        
+        # if the input is dfloat16, switch back to dfloat16
+        if dtype == torch.float16:
+            hidden_states.to(dtype)
+        
+        if is_video:
+            hidden_states = rearrange(hidden_states, "(b f) c h w -> b c f h w", b=b)
+
+        # optional convolution
+        if self.use_conv:
+            if self.name == "conv":
+                hidden_states = self.conv(hidden_states)
+            else: 
+                hidden_states = self.Conv2d0(hidden_states)
+        
+        return hidden_states
