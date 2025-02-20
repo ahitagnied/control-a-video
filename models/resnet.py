@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from functools import partial # fix certain arguments of a function, to create a higher order function
 
-class PseudoConv3D(nn.Conv2d):
+class PseudoConv3d(nn.Conv2d):
     """
     applies a spatial 2d convolutional + 1d temporal convolution for video data processing 
     """
@@ -40,7 +40,7 @@ class PseudoConv3D(nn.Conv2d):
             x = rearrange(x, "b c f h w -> (b f) c h w")
         x = super().forward(x) # pass through a convoution layer of the parent class
         if is_video:
-            x = rearrange(x, "(b f) c h w -> b f c h w") # rearrange to video shape 
+            x = rearrange(x, "(b f) c h w -> b c f h w", b=b) # rearrange to video shape 
 
         *_, h, w = x.shape # retain values of h and w for rearranging
         
@@ -48,13 +48,13 @@ class PseudoConv3D(nn.Conv2d):
             return x
         
         # now do a temporal convolution 
-        x = rearrange(x, "b f c h w -> (b h w) f c")
+        x = rearrange(x, "b c f h w -> (b h w) c f")
         x = self.conv_temporal(x)
-        x = rearrange(x, "(b h w) f c -> b g c h w", h = h, w = w)
+        x = rearrange(x, "(b h w) c f -> b c f h w", h=h, w=w)
 
         return x
 
-class upsamplePseudo3D(nn.Conv2d):
+class UpsamplePseudo3D(nn.Module):
     """
     spatial upsampling layer with optional convolution
     """
@@ -63,7 +63,7 @@ class upsamplePseudo3D(nn.Conv2d):
         self.channels=channels 
         self.use_conv=use_conv
         self.use_conv_transpose=use_conv_transpose
-        self.out_channels=out_channels
+        self.out_channels=out_channels or channels
         self.name=name
 
         conv = None
@@ -71,7 +71,7 @@ class upsamplePseudo3D(nn.Conv2d):
             raise NotImplementedError 
             conv = nn.ConvTranspose2d(channels, self.out_channels, 4, 2, 1)
         elif use_conv:
-            conv = PseudoConv3D(self.channels, self.out_channels, 3, padding=1)
+            conv = PseudoConv3d(self.channels, self.out_channels, 3, padding=1)
         
         if name == "conv":
             self.conv = conv
@@ -84,7 +84,7 @@ class upsamplePseudo3D(nn.Conv2d):
         # change dtype for compatibility issues
         dtype = hidden_states.dtype
         if dtype == torch.bfloat16: 
-            hidden_states.to(torch.float32)
+            hidden_states = hidden_states.to(torch.float32)
         
         # if the batch size is large, then make sure hidden_states is in a contiguous block of memory
         if hidden_states.shape[0] >= 64:
@@ -93,7 +93,7 @@ class upsamplePseudo3D(nn.Conv2d):
         is_video = hidden_states.ndim == 5
         b = hidden_states.shape[0] 
         if is_video:
-            hidden_states = rearrange(hidden_states, "b f c h w -> (b f) c h w")
+            hidden_states = rearrange(hidden_states, "b c f h w -> (b f) c h w")
         if output_size is None: 
             # repeats every weight twice in height and width directions, doubling the size
             hidden_states = F.interpolate(hidden_states, scale_factor=2.0, mode="nearest")
@@ -101,8 +101,8 @@ class upsamplePseudo3D(nn.Conv2d):
             hidden_states = F.interpolate(hidden_states, size=output_size, mode="nearest")
         
         # if the input is dfloat16, switch back to dfloat16
-        if dtype == torch.float16:
-            hidden_states.to(dtype)
+        if dtype == torch.bfloat16:
+            hidden_states = hidden_states.to(dtype)
         
         if is_video:
             hidden_states = rearrange(hidden_states, "(b f) c h w -> b c f h w", b=b)
