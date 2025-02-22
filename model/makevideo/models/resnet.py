@@ -16,7 +16,7 @@ class PseudoConv3d(nn.Conv2d):
             kernel_size=kernel_size,
             **kwargs
         )
-
+        
         # if temporal kernel is not present 
         if temporal_kernel_size == None: temporal_kernel_size = kernel_size
 
@@ -142,3 +142,6 @@ class DownsamplePseudo3D(nn.Module):
     
     def forward(self, hidden_states):
         assert hidden_states.shape[1] == self.channels
+        if self.use_conv and self.padding == 0:
+            padding = (0, 1, 0, 1)
+            hidden_states = F.pad(hidden_states, padding, mode="constant", value=0)
