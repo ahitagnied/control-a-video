@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from functools import partial # fix certain arguments of a function, to create a higher order function
 
-class PseudoConv3d(nn.Conv2d):
+class PseudoConv3D(nn.Conv2d):
     """
     applies a spatial 2d convolutional + 1d temporal convolution for video data processing 
     """
@@ -57,6 +57,8 @@ class PseudoConv3d(nn.Conv2d):
 class UpsamplePseudo3D(nn.Module):
     """
     spatial upsampling layer with optional convolution
+
+    does: input video: x -> F.interpolate to increase h/w -> optinally use a PseudoConv3D for spatial + temporal convolution
     """
     def __init__(self, channels, use_conv=False, out_channels=None, name="conv"):
         super().__init__()
@@ -68,10 +70,10 @@ class UpsamplePseudo3D(nn.Module):
         # initialise convolution layer based on settings
         conv = None
         if use_conv: # use PseudoConv3d for spatial+temporal convolution
-            conv = PseudoConv3d(self.channels, self.out_channels, 3, padding=1)
+            conv = PseudoConv3D(self.channels, self.out_channels, 3, padding=1)
         
         # store convolution layer
-        if name == "conv":
+        if name == "conv": # use name for compatibility issues 
             self.conv = conv
         else: 
             self.Conv2d0 = conv
@@ -125,14 +127,17 @@ class DownsamplePseudo3D(nn.Module):
         super().__init__()
         self.channels=channels 
         self.use_conv=use_conv
-        self.out_channels=out_channels or channels
+        self.out_channels=out_channels or channels # if output channels are not specified -> same as input
         self.padding=padding
         stride=2
         self.name=name
 
         if use_conv:
-            conv = PseudoConv3d(self.channels, self.out_channels, kernel_size=3,stride=stride, padding=padding)
+            # downsample using strided convolution
+            conv = PseudoConv3D(self.channels, self.out_channels, kernel_size=3,stride=stride, padding=padding)
         else: 
+            # downsample using average pooling if no convolution needed
+            # ensures input and output channels match when pooling
             assert self.channels == self.out_channels
             conv = nn.AvgPool2d(kernel_size=stride, stride=stride)
 
@@ -141,7 +146,23 @@ class DownsamplePseudo3D(nn.Module):
         self.conv = conv
     
     def forward(self, hidden_states):
-        assert hidden_states.shape[1] == self.channels
+        assert hidden_states.shape[1] == self.channels # check if input has correct number of channels 
+        # pads right and bottom with pixel 1
         if self.use_conv and self.padding == 0:
             padding = (0, 1, 0, 1)
             hidden_states = F.pad(hidden_states, padding, mode="constant", value=0)
+        # optinally add convolution
+        if self.use_conv:
+            hidden_states = self.conv(hidden_states)
+        else: 
+            # use avgpool instead
+            b = hidden_states.shape[0] # get number of batches
+            is_video = hidden_states.ndim == 5 # check if it is a video
+            if is_video: 
+                # same process as in upsample3d
+                hidden_states = rearrange(hidden_states, "b c f h w -> (b f) c h w")
+            hidden_states = self.conv(hidden_states) # apply avg pool
+            if is_video: 
+                hidden_states = rearrange(hidden_states, "(b f) c h w -> b c f h w") # back to video dimensions
+
+        return hidden_states
